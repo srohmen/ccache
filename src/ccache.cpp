@@ -1273,6 +1273,15 @@ hash_compiler(const Context& ctx,
   } else if (ctx.config.compiler_check() == "content" || !allow_command) {
     hash.hash_delimiter("cc_content");
     hash_binary_file(ctx, hash, path);
+  } else if (ctx.config.compiler_check() == "version") {
+    hash.hash_delimiter("cc_version");
+    if (const std::optional<std::string> version =
+        get_compiler_version(ctx.config, path)) {
+      hash.hash(*version);
+    } else {
+      LOG("Failed to determine version of compiler: {}", path);
+      return nonstd::make_unexpected(Statistic::compiler_check_failed);
+    }
   } else { // command string
     if (!hash_multicommand_output(
           hash, ctx.config.compiler_check(), ctx.orig_args[0])) {

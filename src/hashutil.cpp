@@ -352,6 +352,46 @@ execute_process(ProcessingFunc& process_func,
 #endif
 }
 
+struct ReadPipeOutput
+{
+  bool
+  operator()(int pipeid)
+  {
+    const auto result = util::read_fd(
+      pipeid, [this](const void* data, size_t size) {
+      append_to_output(data, size);
+    });
+
+    if (!result) {
+      LOG("Error hashing compiler check command output: {}",
+          result.error());
+    }
+    return bool(result);
+  }
+
+  void append_to_output(const void* data, size_t size)
+  {
+    std::string_view buffer(static_cast<const char*>(data), size);
+    output += buffer;
+  }
+
+  std::string& output;
+};
+
+bool
+get_external_command_output(std::string& output,
+                            const std::string& cmd,
+                            const std::string& param)
+{
+  Args args;
+  args.push_back(cmd);
+  if (!param.empty()) {
+    args.push_back(param);
+  }
+  ReadPipeOutput read_func{output};
+  return execute_process(read_func, args);
+}
+
 } // namespace
 
 int
@@ -517,4 +557,73 @@ hash_multicommand_output(Hash& hash,
     }
   }
   return true;
+}
+
+std::optional<std::string>
+get_compiler_version(const Config& conf, const std::string& compiler)
+{
+  // TODO: extend for other supported compilers
+  // this function should work for clang, gcc and msvc already
+
+  // msvc has no version/arch parameter to get the output directtly
+  std::string arch_param;
+  if (!conf.is_compiler_group_msvc())
+    arch_param = "-dumpmachine";
+
+  std::string arch_output;
+  const auto arch_proc_result =
+    get_external_command_output(arch_output, compiler, arch_param);
+  if (!arch_proc_result) {
+    return std::nullopt;
+  }
+
+  std::string arch, full_version;
+  if (conf.is_compiler_group_msvc()) {
+    // the first line of MSVC's default output contains something like:
+    // "C/C++ Optimizing Compiler Version 19.29.30147 for x64"
+    // This line contains both information, version and architecture.
+    // Thus, no need to call the compiler once more.
+    const std::vector<std::string_view> lines =
+        Util::split_into_views(arch_output, "\r\n");
+    if (lines.empty()) {
+      LOG("Could not find version string in compiler output: {}", arch_output);
+      return std::nullopt;
+    }
+
+    const std::string_view first_line = lines.front();
+    const std::string token = "C/C++ Optimizing Compiler Version";
+    const size_t pos = first_line.find(token);
+    if (pos == std::string::npos) {
+      LOG("Could not find version string in the compiler output: {}", first_line);
+      return std::nullopt;
+    }
+
+    const std::string_view version_arch = first_line.substr(pos + token.size());
+    // reduced to "19.29.30147 for x64"
+    const std::vector<std::string> elements =
+        Util::split_into_strings(version_arch, " ");
+
+    if (elements.size() < 3) {
+      LOG("Could not separate version from architecture output: {}",
+        first_line);
+      return std::nullopt;
+    }
+    arch = elements[2];
+    full_version = elements[0];
+
+  } else {
+    std::string version_param = "-dumpversion";
+    std::string version_output;
+    const auto version_proc_result =
+        get_external_command_output(version_output, compiler, version_param);
+    if (!version_proc_result) {
+      return std::nullopt;
+    }
+
+    arch = util::strip_whitespace(arch_output);
+    full_version = util::strip_whitespace(version_output);
+  }
+
+  const std::string result = arch + "-" + full_version;
+  return result;
 }

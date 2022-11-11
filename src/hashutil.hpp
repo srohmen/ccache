@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <optional>
 
 class Config;
 class Context;
@@ -74,3 +75,7 @@ bool hash_command_output(Hash& hash,
 bool hash_multicommand_output(Hash& hash,
                               const std::string& command,
                               const std::string& compiler);
+
+// Retrieve the compiler target architecture and version string.
+std::optional<std::string>
+get_compiler_version(const Config &conf, const std::string& compiler);
