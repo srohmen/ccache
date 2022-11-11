@@ -63,6 +63,7 @@ enum class ConfigItem {
   cache_dir,
   compiler,
   compiler_check,
+  compiler_version_significant_digits,
   compiler_type,
   compression,
   compression_level,
@@ -119,6 +120,7 @@ const std::unordered_map<std::string, ConfigKeyTableEntry> k_config_key_table =
     {"cache_dir", {ConfigItem::cache_dir}},
     {"compiler", {ConfigItem::compiler}},
     {"compiler_check", {ConfigItem::compiler_check}},
+    {"compiler_version_significant_digits", {ConfigItem::compiler_version_significant_digits}},
     {"compiler_type", {ConfigItem::compiler_type}},
     {"compression", {ConfigItem::compression}},
     {"compression_level", {ConfigItem::compression_level}},
@@ -168,6 +170,7 @@ const std::unordered_map<std::string, std::string> k_env_variable_table = {
   {"COMMENTS", "keep_comments_cpp"},
   {"COMPILER", "compiler"},
   {"COMPILERCHECK", "compiler_check"},
+  {"COMPILERVERSIONSIGNIFICANTDIGITS", "compiler_version_significant_digits"},
   {"COMPILERTYPE", "compiler_type"},
   {"COMPRESS", "compression"},
   {"COMPRESSLEVEL", "compression_level"},
@@ -696,6 +699,9 @@ Config::get_string_value(const std::string& key) const
   case ConfigItem::compiler_check:
     return m_compiler_check;
 
+  case ConfigItem::compiler_version_significant_digits:
+    return FMT("{}", m_compiler_version_significant_digits);
+
   case ConfigItem::compiler_type:
     return compiler_type_to_string(m_compiler_type);
 
@@ -921,6 +927,12 @@ Config::set_item(const std::string& key,
 
   case ConfigItem::compiler_check:
     m_compiler_check = value;
+    break;
+
+  case ConfigItem::compiler_version_significant_digits:
+    m_compiler_version_significant_digits = util::value_or_throw<core::Error>(
+        util::parse_unsigned(value, 0, std::numeric_limits<uint8_t>::max(),
+                             "compiler_version_significant_digits"));
     break;
 
   case ConfigItem::compiler_type:

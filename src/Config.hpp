@@ -56,6 +56,7 @@ public:
   const std::string& cache_dir() const;
   const std::string& compiler() const;
   const std::string& compiler_check() const;
+  uint8_t compiler_version_significant_digits() const;
   CompilerType compiler_type() const;
   bool compression() const;
   int8_t compression_level() const;
@@ -166,6 +167,7 @@ private:
   std::string m_cache_dir;
   std::string m_compiler;
   std::string m_compiler_check = "mtime";
+  uint8_t m_compiler_version_significant_digits = std::numeric_limits<uint8_t>::max();
   CompilerType m_compiler_type = CompilerType::auto_guess;
   bool m_compression = true;
   int8_t m_compression_level = 0; // Use default level
@@ -245,6 +247,12 @@ inline const std::string&
 Config::compiler_check() const
 {
   return m_compiler_check;
+}
+
+inline uint8_t
+Config::compiler_version_significant_digits() const
+{
+  return m_compiler_version_significant_digits;
 }
 
 inline CompilerType
