@@ -392,6 +392,24 @@ get_external_command_output(std::string& output,
   return execute_process(read_func, args);
 }
 
+std::string
+get_significant_version(const std::string& full_version, const uint8_t sig_digits)
+{
+  const std::vector<std::string> version_elements =
+      Util::split_into_strings(full_version, ".");
+  const size_t n_tokens =
+      std::min(version_elements.size(), (size_t)sig_digits);
+
+  std::string version;
+  if (n_tokens > 0) {
+    version = version_elements.front();
+  }
+  for(size_t i = 1; i < n_tokens; ++i) {
+    version += '.' + version_elements[i];
+  }
+  return version;
+}
+
 } // namespace
 
 int
@@ -624,6 +642,9 @@ get_compiler_version(const Config& conf, const std::string& compiler)
     full_version = util::strip_whitespace(version_output);
   }
 
-  const std::string result = arch + "-" + full_version;
+  const uint8_t sig_digits = conf.compiler_version_significant_digits();
+  const std::string version = get_significant_version(full_version, sig_digits);
+
+  const std::string result = arch + "-" + version;
   return result;
 }
