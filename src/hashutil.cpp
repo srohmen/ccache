@@ -222,6 +222,122 @@ do_hash_file(const Context& ctx,
   return result;
 }
 
+bool
+execute_process(Hash& hash,
+                const std::vector<const char*>& argv)
+{
+
+#ifdef _WIN32
+  PROCESS_INFORMATION pi;
+  memset(&pi, 0x00, sizeof(pi));
+  STARTUPINFO si;
+  memset(&si, 0x00, sizeof(si));
+
+  std::string path = find_executable_in_path(args[0], getenv("PATH"));
+  if (path.empty()) {
+    path = args[0];
+  }
+  std::string sh = win32getshell(path);
+  if (!sh.empty()) {
+    path = sh;
+  }
+
+  si.cb = sizeof(STARTUPINFO);
+
+  HANDLE pipe_out[2];
+  SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+  CreatePipe(&pipe_out[0], &pipe_out[1], &sa, 0);
+  SetHandleInformation(pipe_out[0], HANDLE_FLAG_INHERIT, 0);
+  si.hStdOutput = pipe_out[1];
+  si.hStdError = pipe_out[1];
+  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  si.dwFlags = STARTF_USESTDHANDLES;
+
+  std::string win32args;
+  if (using_cmd_exe) {
+    win32args = adjusted_command; // quoted
+  } else {
+    win32args = Win32Util::argv_to_string(argv.data(), sh);
+  }
+  BOOL ret = CreateProcess(path.c_str(),
+                           const_cast<char*>(win32args.c_str()),
+                           nullptr,
+                           nullptr,
+                           1,
+                           0,
+                           nullptr,
+                           nullptr,
+                           &si,
+                           &pi);
+  CloseHandle(pipe_out[1]);
+  if (ret == 0) {
+    return false;
+  }
+  int fd = _open_osfhandle((intptr_t)pipe_out[0], O_BINARY);
+
+  const auto compiler_check_result = hash.hash_fd(fd);
+  if (!compiler_check_result) {
+    LOG("Error hashing compiler check command output: {}",
+        compiler_check_result.error());
+  }
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD exitcode;
+  GetExitCodeProcess(pi.hProcess, &exitcode);
+  CloseHandle(pipe_out[0]);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  if (exitcode != 0) {
+    LOG("Compiler check command returned {}", exitcode);
+    return false;
+  }
+  return bool(compiler_check_result);
+#else
+  int pipefd[2];
+  if (pipe(pipefd) == -1) {
+    throw core::Fatal(FMT("pipe failed: {}", strerror(errno)));
+  }
+
+  pid_t pid = fork();
+  if (pid == -1) {
+    throw core::Fatal(FMT("fork failed: {}", strerror(errno)));
+  }
+
+  if (pid == 0) {
+    // Child.
+    close(pipefd[0]);
+    close(0);
+    dup2(pipefd[1], 1);
+    dup2(pipefd[1], 2);
+    _exit(execvp(argv[0], const_cast<char* const*>(argv.data())));
+    // Never reached.
+  } else {
+    // Parent.
+    close(pipefd[1]);
+    const auto hash_result = hash.hash_fd(pipefd[0]);
+    if (!hash_result) {
+      LOG("Error hashing compiler check command output: {}",
+          hash_result.error());
+    }
+    close(pipefd[0]);
+
+    int status;
+    int result;
+    while ((result = waitpid(pid, &status, 0)) != pid) {
+      if (result == -1 && errno == EINTR) {
+        continue;
+      }
+      LOG("waitpid failed: {}", strerror(errno));
+      return false;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+      LOG("Compiler check command returned {}", WEXITSTATUS(status));
+      return false;
+    }
+    return bool(hash_result);
+  }
+#endif
+}
+
 } // namespace
 
 int
@@ -377,114 +493,7 @@ hash_command_output(Hash& hash,
   LOG("Executing compiler check command {}",
       Util::format_argv_for_logging(argv.data()));
 
-#ifdef _WIN32
-  PROCESS_INFORMATION pi;
-  memset(&pi, 0x00, sizeof(pi));
-  STARTUPINFO si;
-  memset(&si, 0x00, sizeof(si));
-
-  std::string path = find_executable_in_path(args[0], getenv("PATH"));
-  if (path.empty()) {
-    path = args[0];
-  }
-  std::string sh = win32getshell(path);
-  if (!sh.empty()) {
-    path = sh;
-  }
-
-  si.cb = sizeof(STARTUPINFO);
-
-  HANDLE pipe_out[2];
-  SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
-  CreatePipe(&pipe_out[0], &pipe_out[1], &sa, 0);
-  SetHandleInformation(pipe_out[0], HANDLE_FLAG_INHERIT, 0);
-  si.hStdOutput = pipe_out[1];
-  si.hStdError = pipe_out[1];
-  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-  si.dwFlags = STARTF_USESTDHANDLES;
-
-  std::string win32args;
-  if (using_cmd_exe) {
-    win32args = adjusted_command; // quoted
-  } else {
-    win32args = Win32Util::argv_to_string(argv.data(), sh);
-  }
-  BOOL ret = CreateProcess(path.c_str(),
-                           const_cast<char*>(win32args.c_str()),
-                           nullptr,
-                           nullptr,
-                           1,
-                           0,
-                           nullptr,
-                           nullptr,
-                           &si,
-                           &pi);
-  CloseHandle(pipe_out[1]);
-  if (ret == 0) {
-    return false;
-  }
-  int fd = _open_osfhandle((intptr_t)pipe_out[0], O_BINARY);
-  const auto compiler_check_result = hash.hash_fd(fd);
-  if (!compiler_check_result) {
-    LOG("Error hashing compiler check command output: {}",
-        compiler_check_result.error());
-  }
-  WaitForSingleObject(pi.hProcess, INFINITE);
-  DWORD exitcode;
-  GetExitCodeProcess(pi.hProcess, &exitcode);
-  CloseHandle(pipe_out[0]);
-  CloseHandle(pi.hProcess);
-  CloseHandle(pi.hThread);
-  if (exitcode != 0) {
-    LOG("Compiler check command returned {}", exitcode);
-    return false;
-  }
-  return bool(compiler_check_result);
-#else
-  int pipefd[2];
-  if (pipe(pipefd) == -1) {
-    throw core::Fatal(FMT("pipe failed: {}", strerror(errno)));
-  }
-
-  pid_t pid = fork();
-  if (pid == -1) {
-    throw core::Fatal(FMT("fork failed: {}", strerror(errno)));
-  }
-
-  if (pid == 0) {
-    // Child.
-    close(pipefd[0]);
-    close(0);
-    dup2(pipefd[1], 1);
-    dup2(pipefd[1], 2);
-    _exit(execvp(argv[0], const_cast<char* const*>(argv.data())));
-    // Never reached.
-  } else {
-    // Parent.
-    close(pipefd[1]);
-    const auto hash_result = hash.hash_fd(pipefd[0]);
-    if (!hash_result) {
-      LOG("Error hashing compiler check command output: {}",
-          hash_result.error());
-    }
-    close(pipefd[0]);
-
-    int status;
-    int result;
-    while ((result = waitpid(pid, &status, 0)) != pid) {
-      if (result == -1 && errno == EINTR) {
-        continue;
-      }
-      LOG("waitpid failed: {}", strerror(errno));
-      return false;
-    }
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-      LOG("Compiler check command returned {}", WEXITSTATUS(status));
-      return false;
-    }
-    return bool(hash_result);
-  }
-#endif
+  return execute_process(hash, argv);
 }
 
 bool
