@@ -222,10 +222,32 @@ do_hash_file(const Context& ctx,
   return result;
 }
 
-bool
-execute_process(Hash& hash,
-                const std::vector<const char*>& argv)
+struct HashPipeOutput
 {
+  bool
+  operator()(int pipeid)
+  {
+    const auto hash_result = hash.hash_fd(pipeid);
+    if (!hash_result) {
+      LOG("Error hashing compiler check command output: {}",
+          hash_result.error());
+    }
+    return bool(hash_result);
+  }
+
+  Hash& hash;
+};
+
+template<typename ProcessingFunc>
+bool
+execute_process(ProcessingFunc& process_func,
+                const Args& args,
+                const std::string& adjusted_command = "")
+{
+  // silence compiler warning
+  (void)adjusted_command;
+
+  const auto argv = args.to_argv();
 
 #ifdef _WIN32
   PROCESS_INFORMATION pi;
@@ -254,7 +276,7 @@ execute_process(Hash& hash,
   si.dwFlags = STARTF_USESTDHANDLES;
 
   std::string win32args;
-  if (using_cmd_exe) {
+  if (!adjusted_command.empty()) {
     win32args = adjusted_command; // quoted
   } else {
     win32args = Win32Util::argv_to_string(argv.data(), sh);
@@ -275,11 +297,7 @@ execute_process(Hash& hash,
   }
   int fd = _open_osfhandle((intptr_t)pipe_out[0], O_BINARY);
 
-  const auto compiler_check_result = hash.hash_fd(fd);
-  if (!compiler_check_result) {
-    LOG("Error hashing compiler check command output: {}",
-        compiler_check_result.error());
-  }
+  const bool compiler_check_result = process_func(fd);
   WaitForSingleObject(pi.hProcess, INFINITE);
   DWORD exitcode;
   GetExitCodeProcess(pi.hProcess, &exitcode);
@@ -290,7 +308,7 @@ execute_process(Hash& hash,
     LOG("Compiler check command returned {}", exitcode);
     return false;
   }
-  return bool(compiler_check_result);
+  return compiler_check_result;
 #else
   int pipefd[2];
   if (pipe(pipefd) == -1) {
@@ -313,11 +331,7 @@ execute_process(Hash& hash,
   } else {
     // Parent.
     close(pipefd[1]);
-    const auto hash_result = hash.hash_fd(pipefd[0]);
-    if (!hash_result) {
-      LOG("Error hashing compiler check command output: {}",
-          hash_result.error());
-    }
+    const bool process_result = process_func(pipefd[0]);
     close(pipefd[0]);
 
     int status;
@@ -333,7 +347,7 @@ execute_process(Hash& hash,
       LOG("Compiler check command returned {}", WEXITSTATUS(status));
       return false;
     }
-    return bool(hash_result);
+    return process_result;
   }
 #endif
 }
@@ -466,21 +480,17 @@ hash_command_output(Hash& hash,
   std::string adjusted_command = util::strip_whitespace(command);
 
   // Add "echo" command.
-  bool using_cmd_exe;
   if (util::starts_with(adjusted_command, "echo")) {
     adjusted_command = FMT("cmd.exe /c \"{}\"", adjusted_command);
-    using_cmd_exe = true;
   } else if (util::starts_with(adjusted_command, "%compiler%")
              && compiler == "echo") {
     adjusted_command =
       FMT("cmd.exe /c \"{}{}\"", compiler, adjusted_command.substr(10));
-    using_cmd_exe = true;
-  } else {
-    using_cmd_exe = false;
   }
   Args args = Args::from_string(adjusted_command);
 #else
   Args args = Args::from_string(command);
+  std::string adjusted_command;
 #endif
 
   for (size_t i = 0; i < args.size(); i++) {
@@ -489,11 +499,11 @@ hash_command_output(Hash& hash,
     }
   }
 
-  auto argv = args.to_argv();
   LOG("Executing compiler check command {}",
-      Util::format_argv_for_logging(argv.data()));
+      Util::format_argv_for_logging(args.to_argv().data()));
 
-  return execute_process(hash, argv);
+  HashPipeOutput hash_func{hash};
+  return execute_process(hash_func, args, adjusted_command);
 }
 
 bool
