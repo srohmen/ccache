@@ -462,6 +462,8 @@ process_preprocessed_file(Context& ctx, Hash& hash, const std::string& path)
   const char* p = q;
   const char* end = p + data->length();
 
+  size_t external_header_stack_depth = 0;
+
   // There must be at least 7 characters (# 1 "x") left to potentially find an
   // include file path.
   while (q < end - 7) {
@@ -471,6 +473,9 @@ process_preprocessed_file(Context& ctx, Hash& hash, const std::string& path)
       "# 31 \"<command-line>\"\n";
     static const std::string_view hash_32_command_line_2_newline =
       "# 32 \"<command-line>\" 2\n";
+    static const std::string_view hash_pragma_external_header =
+      "#pragma external_header";
+
     // Note: Intentionally not using the string form to avoid false positive
     // match by ccache itself.
     static const char incbin_directive[] = {'.', 'i', 'n', 'c', 'b', 'i', 'n'};
@@ -550,15 +555,21 @@ process_preprocessed_file(Context& ctx, Hash& hash, const std::string& path)
         // Skip empty file name.
         continue;
       }
-      // Look for preprocessor flags, after the "filename".
+
       bool system = false;
-      const char* r = q + 1;
-      while (r < end && *r != '\n') {
-        if (*r == '3') { // System header.
-          system = true;
+      if (external_header_stack_depth > 0) {
+        system = true;
+      } else {
+        // Look for preprocessor flags, after the "filename".
+        const char* r = q + 1;
+        while (r < end && *r != '\n') {
+          if (*r == '3') { // System header.
+            system = true;
+          }
+          r++;
         }
-        r++;
       }
+
       // p and q span the include file path.
       std::string inc_path(p, q - p);
       inc_path = Util::normalize_concrete_absolute_path(inc_path);
@@ -602,7 +613,49 @@ process_preprocessed_file(Context& ctx, Hash& hash, const std::string& path)
       }
       p = q;
       continue;
-    } else {
+
+    } else if (util::starts_with(q, hash_pragma_external_header)) {
+      // Check for the external header markers emitted by the MSVC preprocessor.
+      // The line is expected to contain something like:
+      // #pragma external_header(push)
+      // #pragma external_header(pop)
+
+      // Do not hash from previous location p until q here.
+      // This special case is just to detect the external header section.
+      // Thus, hashing will be done later by any other condition
+      // or when the file scanning has completed.
+
+      // fast forward to capture the rest of the line after the pragma
+      q += hash_pragma_external_header.size();
+      const char* begin = q;
+      while (q < end && *q != '\n') {
+        q++;
+      }
+
+      const std::string_view arg(begin, q - begin);
+      // arg should contain something like "(push)" or "(pop)".
+      // Search for 'p' and differntiate between push
+      // and pop by the next character, i.e. 'u' or 'o'.
+      const size_t pos = arg.find('p');
+      const char next = arg[pos + 1];
+      if (next == 'u') {
+        // #pragma external_header(push)
+        ++external_header_stack_depth;
+      }
+      else if (next == 'o' && external_header_stack_depth > 0) {
+        // #pragma external_header(pop)
+        --external_header_stack_depth;
+      }
+      else {
+        LOG_RAW("Failed to parse #pragma external_header");
+        return nonstd::make_unexpected(Statistic::internal_error);
+      }
+
+      if (*q == '\n') {
+        q++;
+      }
+    }
+    else {
       q++;
     }
   }
