@@ -589,6 +589,12 @@ Config::read(const std::vector<std::string>& cmdline_config_settings)
   update_from_file(config_path());
   MTR_END("config", "conf_read");
 
+  const std::string exe_dir(Util::dir_name(Util::get_ccache_exe_path()));
+  const std::string extra_conf_file = Util::make_path(exe_dir, "ccache-extra.conf");
+  if(std::filesystem::exists(extra_conf_file)) {
+    update_from_file(extra_conf_file);
+  }
+
   // Ignore cache_dir set in configuration file
   set_cache_dir(cache_dir_before_config_file_was_read);
 
