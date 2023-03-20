@@ -47,6 +47,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <codecvt>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -71,6 +72,40 @@ using util::DirEntry;
 using util::make_path;
 
 namespace {
+
+#ifdef _WIN32
+std::string tchar_to_utf8_string(const char* input)
+{
+	return std::string(input);
+}
+
+std::string tchar_to_utf8_string(const wchar_t* input)
+{
+	const std::wstring wide(input);
+	using convert_type = std::codecvt_utf8<wchar_t>;
+	std::wstring_convert<convert_type, wchar_t> converter;
+	std::string converted_str = converter.to_bytes(wide);
+	return converted_str;
+}
+#endif
+
+// Returns the path to the ccache executable. Symlinks are not resolved.
+fs::path
+get_ccache_exe_path()
+{
+#if defined(__linux__)
+	fs::path p{"/proc/self/exe"};
+	fs::path exe_path = fs::read_symlink(p).value_or(p);
+#elif defined(_WIN32)
+	TCHAR szPath[MAX_PATH];
+	GetModuleFileName(NULL, szPath, MAX_PATH);
+	fs::path exe_path = tchar_to_utf8_string(szPath);
+#else
+# error "platform not supported"
+#endif
+	return exe_path;
+}
+
 
 enum class ConfigItem {
   absolute_paths_in_stderr,
@@ -665,6 +700,13 @@ Config::read(const std::vector<std::string>& cmdline_config_settings)
   const fs::path& cache_dir_before_config_file_was_read = cache_dir();
 
   update_from_file(config_path());
+
+  const fs::path exe_path = get_ccache_exe_path();
+  const fs::path exe_dir = exe_path.parent_path();
+  const fs::path extra_conf_file = exe_dir / "ccache-extra.conf";
+  if(fs::exists(extra_conf_file)) {
+    update_from_file(extra_conf_file);
+  }
 
   // Ignore cache_dir set in configuration file
   set_cache_dir(cache_dir_before_config_file_was_read);
