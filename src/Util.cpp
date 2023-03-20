@@ -36,6 +36,7 @@
 #include <util/string.hpp>
 
 #include <limits.h> // NOLINT: PATH_MAX is defined in limits.h
+#include <codecvt>
 
 extern "C" {
 #include "third_party/base32hex.h"
@@ -195,6 +196,22 @@ rewrite_stderr_to_absolute_paths(std::string_view text)
   }
   return result;
 }
+
+#ifdef _WIN32
+std::string tchar_to_utf8_string(const char* input)
+{
+  return std::string(input);
+}
+
+std::string tchar_to_utf8_string(const wchar_t* input)
+{
+  const std::wstring wide(input);
+  using convert_type = std::codecvt_utf8<wchar_t>;
+  std::wstring_convert<convert_type, wchar_t> converter;
+  const std::string converted_str = converter.to_bytes(wide);
+  return converted_str;
+}
+#endif
 
 } // namespace
 
@@ -767,6 +784,21 @@ is_ccache_executable(const std::string_view path)
   name = Util::to_lowercase(name);
 #endif
   return util::starts_with(name, "ccache");
+}
+
+std::string
+get_ccache_exe_path()
+{
+#if defined(__linux__)
+  const std::string exe_path = read_link("/proc/self/exe");
+#elif defined(_WIN32)
+  TCHAR szPath[MAX_PATH];
+  GetModuleFileName(NULL, szPath, MAX_PATH);
+  const std::string exe_path = tchar_to_utf8_string(szPath);
+#else
+# error "platform not supported"
+#endif
+  return exe_path;
 }
 
 bool

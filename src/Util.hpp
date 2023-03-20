@@ -212,6 +212,9 @@ std::optional<size_t> is_absolute_path_with_prefix(std::string_view path);
 // Detmine if `path` refers to a ccache executable.
 bool is_ccache_executable(std::string_view path);
 
+// Returns the path to the ccache executable. Symlinks are not resolved.
+std::string get_ccache_exe_path();
+
 // Return whether `ch` is a directory separator, i.e. '/' on POSIX systems and
 // '/' or '\\' on Windows systems.
 inline bool
